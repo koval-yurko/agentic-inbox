@@ -3,6 +3,13 @@
 	"name": "agentic-inbox",
 	"compatibility_date": "2025-11-28",
 	"main": "./workers/app.ts",
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "inbox.kovalchuk.win",
+			"custom_domain": true
+		}
+	],
 	"observability": {
 		"enabled": true
 	},
@@ -13,7 +20,7 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "example.com",
+		"DOMAINS": "kovalchuk.win",
 		"EMAIL_ADDRESSES": []
 	},
 	"send_email": [
