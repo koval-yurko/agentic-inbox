@@ -119,13 +119,13 @@ export default function Header() {
 			)}
 
 			<div className="flex items-center gap-1 ml-auto shrink-0">
-				<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
+				<Tooltip content={isAgentPanelOpen ? "Hide MCP panel" : "Show MCP panel"} side="bottom" asChild>
 					<Button
 						variant={isAgentPanelOpen ? "secondary" : "ghost"}
 						shape="square"
 						icon={<RobotIcon size={20} />}
 						onClick={toggleAgentPanel}
-						aria-label="Toggle agent panel"
+						aria-label="Toggle MCP panel"
 						className="hidden lg:inline-flex"
 					/>
 				</Tooltip>

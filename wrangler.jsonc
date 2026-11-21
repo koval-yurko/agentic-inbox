@@ -29,18 +29,11 @@
 			"preview_bucket_name": "agentic-inbox"
 		}
 	],
-	"ai": {
-		"binding": "AI"
-	},
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "MAILBOX",
 				"class_name": "MailboxDO"
-			},
-			{
-				"name": "EMAIL_AGENT",
-				"class_name": "EmailAgent"
 			},
 			{
 				"name": "EMAIL_MCP",
@@ -65,6 +58,13 @@
 			"tag": "v3",
 			"new_sqlite_classes": [
 				"EmailMCP"
+			]
+		},
+		{
+			// Fork: built-in AI agent removed
+			"tag": "v4",
+			"deleted_classes": [
+				"EmailAgent"
 			]
 		}
 	]
