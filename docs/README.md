@@ -17,10 +17,12 @@ Replace these values with your own domain.
 - [Step 8: Check the custom domain](#step-8-check-the-custom-domain)
 - [Step 9: Test the app](#step-9-test-the-app)
 - [Step 10: Connect an MCP client](#step-10-connect-an-mcp-client)
-  - [10.1 Create a service token](#101-create-a-service-token)
-  - [10.2 Allow the token in the Access application](#102-allow-the-token-in-the-access-application)
-  - [10.3 Add the server to your MCP client](#103-add-the-server-to-your-mcp-client)
-  - [10.4 Test the connection](#104-test-the-connection)
+  - [10.1 Turn on Managed OAuth](#101-turn-on-managed-oauth)
+  - [10.2 Set the token lifetime](#102-set-the-token-lifetime)
+  - [10.3 Connect a client with OAuth](#103-connect-a-client-with-oauth)
+  - [10.4 Create a service token](#104-create-a-service-token)
+  - [10.5 Allow the token in the Access application](#105-allow-the-token-in-the-access-application)
+  - [10.6 Use the service token](#106-use-the-service-token)
 - [Logs](#logs)
 - [Troubleshooting](#troubleshooting)
 
@@ -164,35 +166,131 @@ It shows here, and in the zone DNS records as a read-only record of type **Worke
 ![Inbox with the MCP panel](images/15-inbox-and-mcp.png)
 
 The panel on the right shows the MCP server URL (`https://inbox.yourdomain.com/mcp`) and the available tools.
-The `/mcp` endpoint is also behind Access. An external MCP client needs an Access service token. See [Step 10](#step-10-connect-an-mcp-client).
+The `/mcp` endpoint is also behind Access. An external MCP client connects with OAuth or with an Access service token. See [Step 10](#step-10-connect-an-mcp-client).
 
 > **Note:** Some screenshots hide account names and `workers.dev` URLs with grey boxes.
 
 ## Step 10: Connect an MCP client
 
 The MCP server is at `https://inbox.yourdomain.com/mcp`. It uses the Streamable HTTP transport.
-Cloudflare Access protects it. An MCP client cannot do the browser login, so it must send an Access **service token** with each request.
-Access then adds a signed JWT to the request, and the Worker accepts it.
+Cloudflare Access protects it. There are 2 ways to connect:
 
-> **Warning:** A token holder can read and send email from **all** mailboxes. The app has no access control for each mailbox. Give the token a short duration, and revoke it if it leaks.
+- **OAuth (recommended for people):** Claude Code, Cursor and other MCP clients connect with the URL only. A browser login opens 1 time. See 10.1 to 10.3.
+- **Service token (for scripts and CI):** the client sends 2 headers with each request. No browser login is necessary. See 10.4 to 10.6.
 
-### 10.1 Create a service token
+In both cases, Access adds a signed JWT (`Cf-Access-Jwt-Assertion`) to the request, and the Worker accepts it. No code change is necessary.
 
-1. Open **Zero Trust → Access → Service credentials → Service Tokens**, and click **Create Service Token**.
+> **Warning:** Each connected client can read and send email from **all** mailboxes. The app has no access control for each mailbox.
+
+### 10.1 Turn on Managed OAuth
+
+Managed OAuth makes Access a standard OAuth server for the app. It is a Beta feature.
+
+1. Open **Zero Trust → Access controls → Applications**. Find the application that Step 4 created. Its name is similar to `agentic-inbox - Cloudflare Workers`.
+2. Open the **Additional settings** tab, and click the **OAuth** filter.
+3. Turn on **Managed OAuth**. Keep **Allow localhost clients** and **Allow loopback clients** on. Claude Code and other local clients use these redirect URIs.
+4. Add redirect URIs for clients that do not use `localhost` or `127.0.0.1`. Under **Allowed redirect URIs**, click **+ Add URI**, and enter the exact URI. Add 1 URI for each client:
+   - Claude connectors (claude.ai, Claude Desktop, Claude mobile): `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`. Add both.
+   - Cursor: `cursor://anysphere.cursor-mcp/oauth/callback`.
+
+   Custom-scheme URIs must match exactly. HTTP and HTTPS URIs can end with `/*` to match all paths. Claude Code does not need this step, because it uses `localhost`.
+5. Set **Grant session duration** to **2 weeks**. Keep **Access token lifetime** at **Default** (15 minutes). See 10.2.
+6. Click **Save**.
+
+The screenshot shows Managed OAuth on, the 2 localhost switches, and the 2 Claude redirect URIs in **Allowed redirect URIs**:
+
+![Managed OAuth is on](images/18-managed-oauth.png)
+
+After this change:
+
+- A request to `/mcp` without credentials gets `401` with `WWW-Authenticate: Bearer ... resource_metadata=...`. Before, it got `302` to the login page.
+- `https://inbox.yourdomain.com/.well-known/oauth-authorization-server` shows the OAuth endpoints, including `registration_endpoint` for dynamic client registration.
+- The web UI still sends the browser to the Access login page, as before.
+
+### 10.2 Set the token lifetime
+
+Access gives each MCP client 2 tokens:
+
+- The **access token** goes with each request. It is valid for the **Access token lifetime**. The default is 15 minutes.
+- The **refresh token** gets a new access token without a login. It is valid for the **Grant session duration**.
+
+The client refreshes the access token automatically. When the refresh token expires, you must log in again in the browser.
+
+The default **Grant session duration** is **Same as session duration**. That is the application **Session Duration** on the **Application details** tab, which is 24 hours by default. With this value, each MCP client asks for a new login every day.
+
+To keep a client connected for weeks:
+
+1. On the **Additional settings** tab, under **Managed OAuth**, set **Grant session duration** to **2 weeks**. The options are 15 minutes to 1 month, or **Custom**.
+2. Keep **Access token lifetime** at **Default** (15 minutes). A short access token limits the damage if somebody steals it.
+3. Click **Save**.
+4. Log in again 1 time in each client (10.3). A refresh token that the client got before the change keeps its old expiry.
+
+![Grant session duration is 2 weeks](images/20-oauth-grant-session.png)
+
+The refresh token expires 2 weeks after the login, even if you use the client each day. Access checks your Access policies again at each refresh. If you remove a user from the policy, that user's client stops at the next refresh, within 15 minutes.
+
+> **Warning:** A long grant session also gives a stolen refresh token a long life. To stop all clients at once, use **Revoke existing tokens** on the **Additional settings** tab.
+
+### 10.3 Connect a client with OAuth
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http agentic-inbox https://inbox.yourdomain.com/mcp
+```
+
+Then run `/mcp` in Claude Code, select `agentic-inbox`, and select **Authenticate**. The Access login page opens in the browser. Log in with the same account as for the web UI.
+
+After the login, Access shows an **Authorize Client** page. It shows the client name and its redirect URL. Click **Allow**. The client gets an access token (15 minutes) and a refresh token (the grant session, 10.2). It renews the access token without a new login until the refresh token expires.
+
+![Authorize Client page](images/19-oauth-consent.png)
+
+> **Warning:** Click **Allow** only for clients that you started yourself. Each allowed client can read and send email from all mailboxes. To remove the access later, use the link at the bottom of the page.
+
+**Cursor** (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "agentic-inbox": {
+      "url": "https://inbox.yourdomain.com/mcp"
+    }
+  }
+}
+```
+
+A client that uses a custom-scheme redirect URI, for example `cursor://anysphere.cursor-mcp/oauth/callback`, needs that URI in **Allowed redirect URIs** (Step 10.1).
+
+**Claude connector** (claude.ai, Claude Desktop, Claude mobile):
+
+1. Make sure that the 2 Claude redirect URIs are in **Allowed redirect URIs** (Step 10.1, step 4).
+2. In Claude, open **Settings → Connectors**, and click **Add custom connector**.
+3. Enter a name, for example `agentic-inbox`, and the URL `https://inbox.yourdomain.com/mcp`. Leave the OAuth client ID and secret empty. Claude registers itself.
+4. Click **Add**, and then click **Connect**. Log in to Access, and click **Allow** on the **Authorize Client** page.
+
+The connector is in your Claude account, so it also works in Claude Desktop and Claude mobile.
+
+### 10.4 Create a service token
+
+1. Open **Zero Trust → Access controls → Service credentials → Service Tokens**, and click **Create Service Token**.
 2. Enter a name, for example `agentic-inbox-mcp`, and select a duration.
 3. Copy the **Client ID** and the **Client Secret**.
 
-> **Warning:** Cloudflare shows the Client Secret only 1 time. Keep it in a password manager. Do not put it in the repository.
+> **Warning:** Cloudflare shows the Client Secret only 1 time. Keep it in a password manager or in a local `.env` file. Do not put it in the repository.
 
-### 10.2 Allow the token in the Access application
+![Service token](images/16-service-token.png)
 
-1. Open **Zero Trust → Access → Applications**. Find the application that Step 4 created. Its name is similar to `agentic-inbox - Cloudflare Workers`.
-2. Add a policy:
+### 10.5 Allow the token in the Access application
+
+1. Open the application from Step 10.1, and open the **Policies** section.
+2. Click **Create new policy**, and set:
    - **Action:** `Service Auth`. Do not use `Allow`, because `Allow` sends the client to the login page.
    - **Include:** `Service Token` → `agentic-inbox-mcp`.
-3. Save the policy. Keep the current login policy, so that the browser login continues to work.
+3. Save the policy, and save the application. Keep the current login policy, so that the browser login continues to work.
 
-### 10.3 Add the server to your MCP client
+![Access policies with the Service Auth policy](images/17-service-auth-policy.png)
+
+### 10.6 Use the service token
 
 **Claude Code:**
 
@@ -202,7 +300,7 @@ claude mcp add --transport http agentic-inbox https://inbox.yourdomain.com/mcp \
   --header "CF-Access-Client-Secret: <client-secret>"
 ```
 
-**Cursor** (`~/.cursor/mcp.json`) and other clients that accept a URL with headers:
+**Other clients** that accept a URL with headers:
 
 ```json
 {
@@ -218,18 +316,19 @@ claude mcp add --transport http agentic-inbox https://inbox.yourdomain.com/mcp \
 }
 ```
 
-### 10.4 Test the connection
+To keep the values out of your shell history, put them in a `.env` file as `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET`, and load it with [direnv](https://direnv.net/) (`echo dotenv > .envrc && direnv allow`). Then test the connection:
 
 ```bash
 curl -i -X POST https://inbox.yourdomain.com/mcp \
-  -H "CF-Access-Client-Id: <client-id>" \
-  -H "CF-Access-Client-Secret: <client-secret>" \
+  -H "CF-Access-Client-Id: $MCP_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $MCP_CLIENT_SECRET" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
 A good result is HTTP `200` with an MCP response.
+
 In the MCP client, call `list_mailboxes` first. The other tools need a `mailboxId`, for example `test@yourdomain.com`.
 
 For local development, `npm run dev` does not use Access. A local client can use `http://localhost:<port>/mcp` with no headers.
@@ -248,6 +347,8 @@ For local development, `npm run dev` does not use Access. A local client can use
 | A push to `main` does not start a build | The Cloudflare GitHub app has no access to the repository. See Step 2. |
 | An email does not arrive | Check that the catch-all rule is **Active** (Step 6). Check that the mailbox exists in the app. The Worker ignores mail for addresses without a mailbox. |
 | A dashboard variable changes back after a deploy | Set the value in `wrangler.jsonc` (Step 1). |
-| The MCP client gets `302` to a login page | The Access policy for the token must use the action `Service Auth` (Step 10.2). |
-| The MCP client gets `403 Invalid or expired Access token` | Add the token to the same Access application as the Worker (Step 10.2). |
-| The MCP client gets `403 Missing required CF Access JWT` | The client does not send the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers (Step 10.3). |
+| The MCP client gets `302` to a login page | Managed OAuth is off (Step 10.1). For a service token, the policy must use the action `Service Auth` (Step 10.5). |
+| The MCP client gets `401` with `WWW-Authenticate: Bearer` | The client has no valid credentials. Run the OAuth login again (Step 10.3), or check the service token headers (Step 10.6). |
+| The MCP client asks for a new login every day | **Grant session duration** is **Same as session duration** (24 hours). Set it to **2 weeks** (Step 10.2), and log in again 1 time. |
+| The MCP client gets `403 Invalid or expired Access token` | The token belongs to a different Access application. Add it to the application of the Worker (Step 10.5). |
+| Claude shows `Couldn’t register with agentic-inbox’s sign-in service` | Access rejected the client registration with `redirect_uri is not allowed by the account configuration`. Add the 2 Claude redirect URIs to **Allowed redirect URIs** (Step 10.1). The change can take up to 1 minute. Then click **Connect** again. |
